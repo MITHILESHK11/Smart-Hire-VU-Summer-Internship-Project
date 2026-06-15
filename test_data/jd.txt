@@ -1,0 +1,10 @@
+Role: Senior Software Engineer (Python & Machine Learning)
+
+We are looking for a Senior Software Engineer with strong experience in Python, Machine Learning, and Deep Learning to build our AI-powered applications.
+
+Key Requirements:
+- 5+ years of experience in professional software development.
+- Strong proficiency in Python, SQL, and Git.
+- Practical experience with Machine Learning models, Deep Learning, and PyTorch.
+- Experience building APIs with FastAPI and containerizing services using Docker.
+- Degree: B.Tech or M.Tech in Computer Science or a related technical field.
