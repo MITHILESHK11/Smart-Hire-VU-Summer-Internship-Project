@@ -9,7 +9,9 @@ scikit-learn>=1.5.0
 numpy>=1.26.4
 pandas>=2.2.2
 pydantic>=2.7.4
+sqlalchemy>=2.0.31
 pytest>=8.2.2
 httpx>=0.27.0
 # sqlite3 is part of the Python standard library; no external package is required.
+
 

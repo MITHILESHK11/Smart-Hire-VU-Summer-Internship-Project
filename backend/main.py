@@ -6,8 +6,17 @@ import spacy.cli
 from sentence_transformers import SentenceTransformer
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
 from backend.api.routes import api_router
 from backend.config import settings
+from backend.db.database import init_db
+from backend.api.middleware.validation import (
+    http_exception_handler,
+    validation_exception_handler,
+    general_exception_handler
+)
 
 app = FastAPI(
     title="AI-Powered Resume Ranking System",
@@ -25,6 +34,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Register Exception Handlers for uniform error JSON formatting
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(Exception, general_exception_handler)
+
 # Include API Router
 app.include_router(api_router)
 
@@ -32,6 +46,14 @@ app.include_router(api_router)
 async def startup_event():
     print("Starting up FastAPI application...")
     
+    # Initialize SQLite Database tables
+    print("Initializing Database...")
+    try:
+        init_db()
+        print("Database initialized successfully.")
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+        
     # Load spaCy NLP model into app state
     print("Loading spaCy NLP model ('en_core_web_sm')...")
     try:
@@ -39,7 +61,6 @@ async def startup_event():
         print("spaCy model loaded successfully.")
     except Exception as e:
         print(f"Error loading spaCy model: {e}")
-        # Try to download if not found
         try:
             print("Attempting to download 'en_core_web_sm'...")
             spacy.cli.download("en_core_web_sm")
@@ -63,3 +84,4 @@ async def root():
         "status": "active",
         "docs": "/docs"
     }
+
