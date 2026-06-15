@@ -21,6 +21,7 @@ router = APIRouter(prefix="/rank", tags=["Rank"])
 async def rank_resumes(
     request: Request,
     jd_text: str = Form(...),
+    alpha: float = Form(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -39,6 +40,13 @@ async def rank_resumes(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Job description length must be between 50 and 10000 characters. Provided: {jd_len}"
+        )
+        
+    active_alpha = alpha if alpha is not None else settings.ALPHA_WEIGHT
+    if active_alpha < 0.0 or active_alpha > 1.0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Alpha weight must be between 0.0 and 1.0."
         )
         
     # Read files list from multipart form fields
@@ -121,7 +129,7 @@ async def rank_resumes(
         db.commit()
         
         # 5. Hybrid Scoring
-        scored_resumes = compute_hybrid_scores(jd_text, resume_texts, alpha=settings.ALPHA_WEIGHT)
+        scored_resumes = compute_hybrid_scores(jd_text, resume_texts, alpha=active_alpha)
         
         # 6. Rank Candidates and compute keyword gaps
         ranked_candidates = build_ranking_output(
