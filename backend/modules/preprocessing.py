@@ -1,78 +1,62 @@
-# preprocessing.py
-# Module 2: NLP Preprocessing Pipeline
-
-import spacy
 import re
+import spacy
+import logging
 
-_nlp = None
+logger = logging.getLogger(__name__)
 
-def load_nlp_model():
-    """Singleton pattern to load spaCy model once into memory."""
-    global _nlp
-    if _nlp is None:
-        try:
-            _nlp = spacy.load("en_core_web_sm")
-        except Exception:
-            import spacy.cli
-            spacy.cli.download("en_core_web_sm")
-            _nlp = spacy.load("en_core_web_sm")
-    return _nlp
+# Load the spaCy model globally. We load it once at startup.
+try:
+    nlp = spacy.load("en_core_web_sm")
+except Exception as e:
+    logger.warning(f"Could not load 'en_core_web_sm' from spacy. Trying fallback installation... Error: {e}")
+    # Fallback load if needed
+    nlp = spacy.load("en_core_web_sm")
 
 def clean_text(text: str) -> str:
-    """Converts to lowercase, removes special characters, and normalizes whitespace."""
+    """
+    Cleans raw text by:
+    - Converting to lowercase
+    - Normalizing whitespace and newlines
+    - Removing special characters (keeping letters, numbers, and basic punctuation/symbols like +, # for languages like C++, C#)
+    """
     if not text:
         return ""
-    # Lowercase
-    cleaned = text.lower()
-    # Replace special characters with spaces (preserving alphanumeric)
-    cleaned = re.sub(r'[^a-zA-Z0-9\s]', ' ', cleaned)
-    # Normalize multiple whitespace down to single space
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    return cleaned
-
-def tokenise(text: str) -> list[str]:
-    """Tokenizes text using spaCy, removing whitespace tokens."""
-    if not text:
-        return []
-    nlp = load_nlp_model()
-    doc = nlp(text)
-    return [token.text for token in doc if not token.is_space]
-
-def remove_stopwords(tokens: list[str]) -> list[str]:
-    """Removes standard English stopwords using spaCy's built-in stop words list."""
-    if not tokens:
-        return []
-    nlp = load_nlp_model()
-    stop_words = nlp.Defaults.stop_words
-    return [t for t in tokens if t not in stop_words]
-
-def lemmatise(tokens: list[str]) -> list[str]:
-    """Converts a list of token strings into their normalized base/lemma forms using spaCy."""
-    if not tokens:
-        return []
-    nlp = load_nlp_model()
-    # Re-assemble tokens into a string for contextual pos-tagging and lemmatization
-    doc = nlp(" ".join(tokens))
-    return [token.lemma_ for token in doc if not token.is_space]
-
-def preprocess(text: str) -> dict:
-    """Chains all preprocessing steps: clean -> tokenize -> remove stopwords -> lemmatize."""
-    if not text or not text.strip():
-        return {
-            "raw": text if text is not None else "",
-            "cleaned": "",
-            "tokens": [],
-            "lemmas": []
-        }
-        
-    cleaned = clean_text(text)
-    tokens = tokenise(cleaned)
-    no_stopwords = remove_stopwords(tokens)
-    lemmas = lemmatise(no_stopwords)
     
-    return {
-        "raw": text,
-        "cleaned": cleaned,
-        "tokens": tokens,
-        "lemmas": lemmas
-    }
+    # Convert to lowercase
+    text = text.lower()
+    
+    # Clean up formatting artifacts / replace common separators with spaces
+    text = re.sub(r'[\r\n\t]', ' ', text)
+    
+    # Keep alphanumeric characters, spaces, and tech characters like ++, #, .
+    # Let's keep basic punctuation for now but clean up odd symbols
+    # A regex to keep standard characters but remove garbage characters:
+    text = re.sub(r'[^\w\s\+\#\-\.]', ' ', text)
+    
+    # Normalize multiple whitespace characters to a single space
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
+
+def preprocess_text(text: str) -> str:
+    """
+    Cleans, tokenizes, removes stop-words, and lemmatizes the text.
+    Returns a space-separated string of processed lemmas.
+    """
+    cleaned = clean_text(text)
+    if not cleaned:
+        return ""
+    
+    doc = nlp(cleaned)
+    processed_tokens = []
+    
+    for token in doc:
+        # Check if it is a stop-word or punctuation/whitespace
+        if not token.is_stop and not token.is_punct and not token.is_space:
+            # Keep lemmatized form
+            lemma = token.lemma_.strip()
+            # Retain non-empty lemmas
+            if lemma:
+                processed_tokens.append(lemma)
+                
+    return " ".join(processed_tokens)

@@ -1,181 +1,125 @@
-# rank.py
-# Route handler for POST /api/rank
-
-import time
 import uuid
+import logging
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from typing import List, Optional
 import json
-import os
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, status
-from sqlalchemy.orm import Session
-from backend.db.database import get_db
-from backend.db.models import Session as DBSession, Resume as DBResume, Result as DBResult
-from backend.config import settings
-from backend.modules.ingestion import process_uploads
-from backend.modules.ner import extract_entities
+
+from backend.modules.ingestion import extract_text
+from backend.modules.preprocessing import preprocess_text
+from backend.modules.ner import run_ner
+from backend.modules.tfidf_scorer import compute_tfidf_similarity
+from backend.modules.sbert_scorer import compute_sbert_similarity
 from backend.modules.hybrid_scorer import compute_hybrid_scores
-from backend.modules.ranking import build_ranking_output
+from backend.modules.ranking import rank_candidates
+from backend.db.models import save_session, save_candidate_results
+from backend.api.middleware.validation import validate_uploaded_files, validate_job_description
 
-router = APIRouter(prefix="/rank", tags=["Rank"])
+router = APIRouter()
+logger = logging.getLogger(__name__)
 
-@router.post("")
+@router.post("/rank")
 async def rank_resumes(
-    request: Request,
-    jd_text: str = Form(...),
-    alpha: float = Form(None),
-    db: Session = Depends(get_db)
+    resumes: List[UploadFile] = File(...),
+    job_description: str = Form(...),
+    alpha: float = Form(0.4)
 ):
     """
-    Accepts job description text and batch resumes, processes them, 
-    calculates scores, and persists results to database.
+    Accepts resumes (PDF/DOCX) and a job description (text),
+    runs the NLP pipeline, scores and ranks them, stores the session,
+    and returns the ranked candidates.
     """
-    # 1. Input validation
-    if not jd_text or not jd_text.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Job description text is required."
-        )
-        
-    jd_len = len(jd_text.strip())
-    if jd_len < 50 or jd_len > 10000:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Job description length must be between 50 and 10000 characters. Provided: {jd_len}"
-        )
-        
-    active_alpha = alpha if alpha is not None else settings.ALPHA_WEIGHT
-    if active_alpha < 0.0 or active_alpha > 1.0:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Alpha weight must be between 0.0 and 1.0."
-        )
-        
-    # Read files list from multipart form fields
-    form = await request.form()
-    files = form.getlist("files[]") or form.getlist("files")
+    # 0. Validate inputs
+    validate_uploaded_files(resumes)
+    validate_job_description(job_description)
     
-    if not files:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="At least one resume file must be uploaded under key 'files[]' or 'files'."
-        )
-        
-    if len(files) > 50:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Maximum limit is 50 resumes per request. Provided: {len(files)}"
-        )
-        
-    # 2. Initialize database session record
     session_id = str(uuid.uuid4())
-    db_session = DBSession(
-        session_id=session_id,
-        jd_text=jd_text,
-        status="PROCESSING"
-    )
-    db.add(db_session)
-    db.commit()
+    logger.info(f"Starting resume ranking session {session_id} with {len(resumes)} files.")
     
-    start_time = time.time()
+    # 1. Parse and extract text from resumes
+    parsed_resumes = []
+    failed_files = []
     
-    try:
-        # 3. Process uploads
-        upload_dir = os.path.join(settings.UPLOAD_DIR, session_id)
-        uploads = process_uploads(files, upload_dir)
-        
-        success_uploads = [u for u in uploads if u["status"] == "success"]
-        
-        # Graceful handling if no valid/supported files processed
-        if not success_uploads:
-            db_session.status = "COMPLETED"
-            db.commit()
+    for file in resumes:
+        try:
+            content = await file.read()
+            text = extract_text(content, file.filename)
+            if not text.strip():
+                failed_files.append({"filename": file.filename, "error": "Empty file content"})
+                continue
+            parsed_resumes.append({
+                "filename": file.filename,
+                "raw_text": text
+            })
+        except Exception as e:
+            logger.error(f"Failed to ingest resume '{file.filename}': {e}")
+            failed_files.append({"filename": file.filename, "error": str(e)})
             
-            processing_time_ms = int((time.time() - start_time) * 1000)
-            return {
-                "session_id": session_id,
-                "ranked_candidates": [],
-                "processing_time_ms": processing_time_ms
-            }
-            
-        # 4. Process files and extract entities
-        db_resumes = []
-        resume_texts = []
-        ner_results = []
-        filenames = []
-        
-        for u in success_uploads:
-            filename = u["filename"]
-            raw_text = u["raw_text"]
-            
-            # Named Entity Recognition
-            ner_info = extract_entities(raw_text)
-            
-            resume_id = str(uuid.uuid4())
-            db_resume = DBResume(
-                resume_id=resume_id,
-                session_id=session_id,
-                filename=filename,
-                raw_text=raw_text,
-                parsed_skills=json.dumps(ner_info["skills"]),
-                parsed_education=json.dumps(ner_info["education"]),
-                parsed_experience=json.dumps({"years": ner_info["years_experience"]})
-            )
-            db.add(db_resume)
-            db_resumes.append(db_resume)
-            
-            resume_texts.append(raw_text)
-            ner_results.append(ner_info)
-            filenames.append(filename)
-            
-        db.commit()
-        
-        # 5. Hybrid Scoring
-        scored_resumes = compute_hybrid_scores(jd_text, resume_texts, alpha=active_alpha)
-        
-        # 6. Rank Candidates and compute keyword gaps
-        ranked_candidates = build_ranking_output(
-            session_id=session_id,
-            filenames=filenames,
-            scored_resumes=scored_resumes,
-            resume_texts=resume_texts,
-            jd_text=jd_text,
-            ner_results=ner_results
-        )
-        
-        # 7. Persist Results to database
-        resume_by_filename = {r.filename: r for r in db_resumes}
-        for item in ranked_candidates:
-            filename = item["filename"]
-            db_resume = resume_by_filename[filename]
-            
-            result_id = str(uuid.uuid4())
-            db_result = DBResult(
-                result_id=result_id,
-                session_id=session_id,
-                resume_id=db_resume.resume_id,
-                tfidf_score=item["tfidf_score"],
-                sbert_score=item["sbert_score"],
-                final_score=item["final_score"],
-                missing_keywords=json.dumps(item["missing_keywords"]),
-                rank_position=item["rank"]
-            )
-            db.add(db_result)
-            
-        # Complete session update
-        db_session.status = "COMPLETED"
-        db.commit()
-        
-        processing_time_ms = int((time.time() - start_time) * 1000)
-        return {
-            "session_id": session_id,
-            "ranked_candidates": ranked_candidates,
-            "processing_time_ms": processing_time_ms
-        }
-        
-    except Exception as e:
-        # Mark session as failed
-        db_session.status = "FAILED"
-        db.commit()
+    if not parsed_resumes:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Pipeline processing failed: {str(e)}"
+            status_code=422, 
+            detail=f"Failed to parse any of the uploaded resumes. Failures: {json.dumps(failed_files)}"
         )
+        
+    # 2. Extract skills from Job Description using NER
+    jd_ner = run_ner(job_description)
+    jd_skills = jd_ner["skills"]
+    
+    # 3. Preprocess Job Description and Resume texts
+    jd_processed = preprocess_text(job_description)
+    resume_processed_list = []
+    for res in parsed_resumes:
+        resume_processed_list.append(preprocess_text(res["raw_text"]))
+        
+    # 4. Compute TF-IDF (lexical) Scores
+    try:
+        tfidf_scores = compute_tfidf_similarity(jd_processed, resume_processed_list)
+    except Exception as e:
+        logger.error(f"TF-IDF scoring failed: {e}")
+        tfidf_scores = [0.0] * len(parsed_resumes)
+        
+    # 5. Compute SBERT (semantic) Scores
+    try:
+        sbert_scores = compute_sbert_similarity(job_description, [res["raw_text"] for res in parsed_resumes])
+    except Exception as e:
+        logger.error(f"SBERT scoring failed: {e}")
+        sbert_scores = [0.0] * len(parsed_resumes)
+        
+    # 6. Compute Hybrid Scores
+    hybrid_scores = compute_hybrid_scores(tfidf_scores, sbert_scores, alpha)
+    
+    # 7. Extract Profile Structures (NER) for resumes
+    candidates_raw_data = []
+    for idx, res in enumerate(parsed_resumes):
+        # Extract features (skills, education, titles, experience) from original text
+        ner_results = run_ner(res["raw_text"])
+        
+        candidates_raw_data.append({
+            "filename": res["filename"],
+            "raw_text": res["raw_text"],
+            "tfidf_score": round(tfidf_scores[idx] * 100, 1),
+            "sbert_score": round(sbert_scores[idx] * 100, 1),
+            "final_score": round(hybrid_scores[idx] * 100, 1),
+            "skills": ner_results["skills"],
+            "education": ner_results["education"],
+            "job_titles": ner_results["job_titles"],
+            "years_of_experience": round(ner_results["years_of_experience"], 1)
+        })
+        
+    # 8. Rank candidates & compute keyword gaps
+    ranked_candidates = rank_candidates(candidates_raw_data, jd_skills)
+    
+    # 9. Persistent Storage in SQLite
+    try:
+        save_session(session_id, job_description, jd_skills, alpha)
+        save_candidate_results(session_id, ranked_candidates)
+    except Exception as e:
+        logger.error(f"Failed to persist session in DB: {e}")
+        # Continue and return response even if database storage fails
+        
+    return {
+        "session_id": session_id,
+        "alpha": alpha,
+        "required_skills": jd_skills,
+        "candidates": ranked_candidates,
+        "failed_files": failed_files
+    }

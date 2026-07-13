@@ -3,28 +3,24 @@ version: '3.8'
 services:
   backend:
     build:
-      context: .
+      context: ./backend
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app/backend
-      - shared-data:/app/data
+      - ./backend/resume_ranking.db:/app/resume_ranking.db
     environment:
-      - DATABASE_URL=sqlite:////app/data/resume_ranking.db
-      - UPLOAD_DIR=/app/data/resumes
-    restart: always
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
 
   frontend:
-    # Build target is placeholder - full Dockerization happens in Phase 6
-    image: node:18-alpine
-    working_dir: /app
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     ports:
-      - "3000:3000"
-    volumes:
-      - ./frontend:/app
-    command: npm run dev
-    restart: always
-
-volumes:
-  shared-data:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped

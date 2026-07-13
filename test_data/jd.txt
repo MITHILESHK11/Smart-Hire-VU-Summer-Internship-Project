@@ -1,10 +1,7 @@
-Role: Senior Software Engineer (Python & Machine Learning)
+Job Title: Python Software Engineer (Machine Learning)
+Experience Required: 3-5 years of experience
+Required Skills: Python, Machine Learning, NLP, FastAPI, Docker, SQL, PostgreSQL, Git, AWS.
+Education: Bachelor's Degree in Computer Science or equivalent.
 
-We are looking for a Senior Software Engineer with strong experience in Python, Machine Learning, and Deep Learning to build our AI-powered applications.
-
-Key Requirements:
-- 5+ years of experience in professional software development.
-- Strong proficiency in Python, SQL, and Git.
-- Practical experience with Machine Learning models, Deep Learning, and PyTorch.
-- Experience building APIs with FastAPI and containerizing services using Docker.
-- Degree: B.Tech or M.Tech in Computer Science or a related technical field.
+Job Description:
+We are looking for a Python Software Engineer to join our AI team. You will build and deploy machine learning models, develop REST APIs using FastAPI, and containerize applications with Docker. You will work with relational databases like PostgreSQL and deploy applications on AWS. Experience with Git for version control is required.

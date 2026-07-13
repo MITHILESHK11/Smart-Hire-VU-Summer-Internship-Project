@@ -1,46 +1,73 @@
-# validation.py
-# Input Validation and Exception Handlers
+import logging
+from fastapi import HTTPException, UploadFile
+from typing import List
 
-from fastapi import Request, status
-from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
+logger = logging.getLogger(__name__)
 
-async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    """Custom exception handler for Starlette/FastAPI HTTPExceptions."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": "HTTP Error",
-            "detail": exc.detail,
-            "status_code": exc.status_code
-        }
-    )
+# Constants as specified in section 4.1 of the report
+MAX_FILE_SIZE_MB = 5
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
+MAX_RESUMES_PER_SESSION = 50
 
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Custom validation handler formatting Pydantic/FastAPI input errors consistently."""
-    errors = exc.errors()
-    # Format details into readable single-string summary
-    detail_msg = "; ".join([
-        f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" 
-        for err in errors
-    ])
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "error": "Validation Error",
-            "detail": detail_msg,
-            "status_code": status.HTTP_422_UNPROCESSABLE_ENTITY
-        }
-    )
+def validate_uploaded_files(files: List[UploadFile]):
+    """
+    Validates uploaded resume files:
+    - Maximum count (50 files)
+    - Supported extensions (.pdf, .docx, .txt)
+    - Maximum file size (5MB)
+    """
+    if not files or len(files) == 0:
+        raise HTTPException(status_code=400, detail="No files uploaded. At least one resume is required.")
+        
+    if len(files) > MAX_RESUMES_PER_SESSION:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Too many files. A maximum of {MAX_RESUMES_PER_SESSION} resumes can be processed per session."
+        )
+        
+    for file in files:
+        # Check extension
+        filename_lower = file.filename.lower()
+        has_valid_ext = any(filename_lower.endswith(ext) for ext in SUPPORTED_EXTENSIONS)
+        if not has_valid_ext:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file format: '{file.filename}'. Only PDF, DOCX, and TXT files are supported."
+            )
+            
+        # We can't always check size without reading, but we can do a size check if content-length is present.
+        # Alternatively, we can check file.size in newer FastAPI versions or read a chunk.
+        # Let's do a safe check on file size:
+        try:
+            # Check if file has a size attribute (available in newer starlette/fastapi)
+            if hasattr(file, "size") and file.size is not None:
+                if file.size > MAX_FILE_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"File '{file.filename}' exceeds the maximum allowed size of {MAX_FILE_SIZE_MB}MB."
+                    )
+        except Exception as e:
+            logger.warning(f"Could not verify file size for '{file.filename}': {e}")
+            
+    return True
 
-async def general_exception_handler(request: Request, exc: Exception):
-    """Fallback exception handler for unhandled internal failures to avoid server crashes."""
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "error": "Internal Server Error",
-            "detail": str(exc),
-            "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR
-        }
-    )
+def validate_job_description(jd_text: str):
+    """
+    Validates the job description text:
+    - Minimum 50 characters
+    - Maximum 10,000 characters
+    """
+    if not jd_text or len(jd_text.strip()) < 50:
+        raise HTTPException(
+            status_code=400,
+            detail="Job description is too short. It must contain at least 50 characters to ensure meaningful ranking."
+        )
+        
+    if len(jd_text) > 10000:
+        raise HTTPException(
+            status_code=400,
+            detail="Job description exceeds the maximum length of 10,000 characters."
+        )
+        
+    return True

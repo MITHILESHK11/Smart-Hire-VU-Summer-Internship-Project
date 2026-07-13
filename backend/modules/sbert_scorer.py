@@ -1,57 +1,49 @@
-# sbert_scorer.py
-# Module 4B: Sentence-BERT Semantic Scoring Engine
-
-from sentence_transformers import SentenceTransformer
+import logging
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from backend.config import settings
+from typing import List
 
+logger = logging.getLogger(__name__)
+
+# Global model holder for lazy-loading
 _sbert_model = None
 
-def load_sbert_model(model_name: str = settings.SBERT_MODEL_NAME) -> SentenceTransformer:
-    """Loads and caches the Sentence-BERT model (Singleton pattern)."""
+def get_sbert_model():
+    """Initializes and returns the SentenceTransformer model (singleton)."""
     global _sbert_model
     if _sbert_model is None:
-        _sbert_model = SentenceTransformer(model_name)
+        try:
+            from sentence_transformers import SentenceTransformer
+            logger.info("Loading Sentence-BERT model (all-MiniLM-L6-v2)...")
+            _sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
+            logger.info("Sentence-BERT model loaded successfully.")
+        except Exception as e:
+            logger.error(f"Failed to load SBERT model: {e}")
+            raise RuntimeError(f"Could not load Sentence-BERT model: {e}")
     return _sbert_model
 
-def encode_text(model, text: str) -> np.ndarray:
-    """Encodes a single string text into a normalized SBERT dense vector."""
-    if not text or not text.strip():
-        # Default zero-filled vector matching MiniLM 384 dimensions
-        return np.zeros(384)
-    # Enable normalize_embeddings to compute cosine similarity directly via dot product or cosine_similarity
-    return model.encode(text, normalize_embeddings=True)
-
-def batch_encode(model, texts: list[str], batch_size=16) -> np.ndarray:
-    """Encodes a list of string texts in batches with normalized embeddings."""
-    if not texts:
-        return np.empty((0, 384))
-    cleaned_texts = [t if (t and t.strip()) else "" for t in texts]
-    return model.encode(cleaned_texts, batch_size=batch_size, normalize_embeddings=True)
-
-def compute_sbert_similarity(jd_text: str, resume_texts: list[str]) -> list[float]:
-    """Computes semantic similarity scores between a job description and a list of resumes using SBERT."""
+def compute_sbert_similarity(jd_text: str, resume_texts: List[str]) -> List[float]:
+    """
+    Computes semantic similarity scores using Sentence-BERT embeddings.
+    Uses batch encoding for performance optimization.
+    """
     if not resume_texts:
         return []
         
-    model = load_sbert_model()
+    model = get_sbert_model()
     
-    # Encode JD (1, D)
-    jd_embedding = encode_text(model, jd_text).reshape(1, -1)
-    
-    scores = []
-    for text in resume_texts:
-        if not text or not text.strip():
-            scores.append(0.0)
-            continue
-            
-        resume_embedding = encode_text(model, text).reshape(1, -1)
-        # Cosine similarity calculation
-        similarity = cosine_similarity(jd_embedding, resume_embedding)[0][0]
-        # Map values to positive range 0.0 - 1.0 (cosine sim of normalised vectors ranges -1 to 1)
-        # Cosine similarity on SBERT embeddings is typically >= 0, but clip it just in case
-        similarity = float(np.clip(similarity, 0.0, 1.0))
-        scores.append(similarity)
+    try:
+        # Encode job description (single query)
+        jd_embedding = model.encode(jd_text, convert_to_numpy=True).reshape(1, -1)
         
-    return scores
+        # Batch encode resumes (returns a 2D matrix of shape [num_resumes, embedding_dim])
+        resume_embeddings = model.encode(resume_texts, batch_size=16, show_progress_bar=False, convert_to_numpy=True)
+        
+        # Compute cosine similarity
+        similarities = cosine_similarity(resume_embeddings, jd_embedding).flatten()
+        
+        return [float(score) for score in similarities]
+    except Exception as e:
+        logger.error(f"Error in SBERT similarity computation: {e}")
+        # Fallback to 0.0 scores
+        return [0.0] * len(resume_texts)

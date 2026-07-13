@@ -1,87 +1,59 @@
-# main.py
-# FastAPI Application Entry Point for AI-Powered Resume Ranking System
-
-import spacy
-import spacy.cli
-from sentence_transformers import SentenceTransformer
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from contextlib import asynccontextmanager
 
-from backend.api.routes import api_router
-from backend.config import settings
-from backend.db.database import init_db
-from backend.api.middleware.validation import (
-    http_exception_handler,
-    validation_exception_handler,
-    general_exception_handler
+from backend.db.models import init_db
+from backend.api.routes.rank import router as rank_router
+from backend.api.routes.results import router as results_router
+from backend.api.routes.export import router as export_router
+
+# Configure logger
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler()
+    ]
 )
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize the database on startup
+    logger.info("Initializing database...")
+    init_db()
+    yield
+    logger.info("Shutting down backend server...")
 
 app = FastAPI(
     title="AI-Powered Resume Ranking System",
-    description="Backend API for ranking resumes based on TF-IDF and SBERT semantic similarities.",
+    description="Automatically screens and ranks resumes against a job description using a hybrid TF-IDF (lexical) + SBERT (semantic) model.",
     version="1.0.0",
-    docs_url="/docs"
+    lifespan=lifespan
 )
 
-# CORS Middleware configuration (allow all origins for development)
+# Enable CORS for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # For local development; restrict in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Register Exception Handlers for uniform error JSON formatting
-app.add_exception_handler(StarletteHTTPException, http_exception_handler)
-app.add_exception_handler(RequestValidationError, validation_exception_handler)
-app.add_exception_handler(Exception, general_exception_handler)
-
-# Include API Router
-app.include_router(api_router)
-
-@app.on_event("startup")
-async def startup_event():
-    print("Starting up FastAPI application...")
-    
-    # Initialize SQLite Database tables
-    print("Initializing Database...")
-    try:
-        init_db()
-        print("Database initialized successfully.")
-    except Exception as e:
-        print(f"Error initializing database: {e}")
-        
-    # Load spaCy NLP model into app state
-    print("Loading spaCy NLP model ('en_core_web_sm')...")
-    try:
-        app.state.nlp = spacy.load("en_core_web_sm")
-        print("spaCy model loaded successfully.")
-    except Exception as e:
-        print(f"Error loading spaCy model: {e}")
-        try:
-            print("Attempting to download 'en_core_web_sm'...")
-            spacy.cli.download("en_core_web_sm")
-            app.state.nlp = spacy.load("en_core_web_sm")
-            print("spaCy model downloaded and loaded successfully.")
-        except Exception as dl_err:
-            print(f"Failed to download spaCy model: {dl_err}")
-
-    # Load SBERT model into app state
-    print(f"Loading SBERT model '{settings.SBERT_MODEL_NAME}'...")
-    try:
-        app.state.sbert = SentenceTransformer(settings.SBERT_MODEL_NAME)
-        print("SBERT model loaded successfully.")
-    except Exception as e:
-        print(f"Error loading SBERT model: {e}")
+# Register routers under /api prefix
+app.include_router(rank_router, prefix="/api")
+app.include_router(results_router, prefix="/api")
+app.include_router(export_router, prefix="/api")
 
 @app.get("/")
 async def root():
     return {
-        "app": "AI-Powered Resume Ranking System API",
-        "status": "active",
-        "docs": "/docs"
+        "message": "AI-Powered Resume Ranking System API is online.",
+        "docs_url": "/docs"
     }
 
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
